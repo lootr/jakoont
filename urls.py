@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.conf.urls.defaults import *
 
 # Uncomment the next two lines to enable the admin:
@@ -7,7 +8,10 @@ admin.autodiscover()
 urlpatterns = patterns('',
     # Example:
     # (r'^jakoont/', include('jakoont.foo.urls')),
-    (r'^projects/$', 'jakoont.views.index'),
+    (r'^static/(?P<path>.*)$', 'django.views.static.serve',
+     {'document_root': settings.STATIC_DOC_ROOT}),
+    (r'^$', 'jakoont.views.index'),
+    (r'^(?P<action>\w+)/(?P<pid>\d+)/$', 'jakoont.views.do'),
 
     # Uncomment the admin/doc line below to enable admin documentation:
     # (r'^admin/doc/', include('django.contrib.admindocs.urls')),
