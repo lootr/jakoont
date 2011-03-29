@@ -1,44 +1,132 @@
 from __future__ import with_statement
 
 import os
-from nagare import presentation
+import itertools
+from nagare import presentation, var
+from nagare.database import session
+from sqlalchemy.sql import func
 
-class Jakoont2(object):
-    pass
+from jakoont.models import Project, User, Entry
 
-@presentation.render_for(Jakoont2)
+class Jakoont(object):
+    def __init__(self):
+        self.project = session.query(Project).first()
+        self.all_users = session.query(User).all()
+        self.entry_users = session.query(User)\
+            .join(Entry)\
+            .filter(Entry.project_id == self.project.id)\
+            .all()
+        self.entry_user_id = var.Var()
+
+    def add_entry(self, amount):
+        session.add(Entry(amount=amount,
+                          user_id=self.entry_user_id(),
+                          project=self.project))
+    
+    def get_avg_amount(self):
+        avg_amount = session.query(func.sum(Entry.amount))\
+            .filter_by(project_id=self.project.id)\
+            .first()[0]
+        if avg_amount is not None:
+            return avg_amount / len(self.entry_users)
+    
+    def get_users_amounts(self):
+        d = {}
+        for user in self.entry_users:
+            d[user] = session.query(func.sum(Entry.amount))\
+                .filter_by(project_id=self.project.id)\
+                .filter_by(user_id=user.id)\
+                .first()[0]
+        return d
+
+    def get_user_repartition(self):
+        avg_amount = self.get_avg_amount()
+        users_amounts = self.get_users_amounts()
+        d = {}
+        d2 = None
+        while d2 != d:
+            d2 = d.copy()
+            for u1, u2 in itertools.product(self.entry_users, repeat=2):
+                if u1 == u2: continue
+                u1a = users_amounts[u1]
+                u2a = users_amounts[u2]
+                if u1a > avg_amount or u2a < avg_amount or u1a > u2a: continue
+                to_give = u2a - avg_amount
+                if to_give > u1a:
+                    to_give = u1a
+                to_give = round(to_give, 2)
+                if to_give:
+                    users_amounts[u1] += to_give
+                    users_amounts[u2] -= to_give
+                    d[u1][u2] = d.setdefault(u1, {}).setdefault(u2, 0.) + to_give
+        return d
+    
+    def login(self):
+        pass
+
+    def remove_entry(self, eid):
+        session.query(Entry).filter_by(id=eid).delete()
+
+@presentation.render_for(Jakoont)
+def render(self, h, comp, *args):
+    h.head.title("Accueil - Jakoont")
+    h.head.css_url('/static/jakoont/jakoont.css')
+    with h.div(id="main"):
+        h << comp.render(h, "header")
+        h << comp.render(h, "middle")
+        h << comp.render(h, "footer")
+
+    return h.root
+
+@presentation.render_for(Jakoont, "header")
 def render(self, h, *args):
-    this_file = __file__
-    if this_file.endswith('.pyc'):
-        this_file = __file__[:-1]
+    with h.div(id="header"):
+        h << h.span("Jakoont")
+        with h.div(class_="topmenu"):
+            with h.ul(class_="nav"):
+                h << h.li(h.a("Connexion").action(self.login), class_="login")
 
-    models_file = os.path.join(os.path.dirname(__file__), 'models.py')
+    return h.root
 
-    h.head.css_url('/static/nagare/application.css')
-    h.head << h.head.title('Up and Running !')
+@presentation.render_for(Jakoont, "footer")
+def render(self, h, *args):
+    return h.root
 
-    with h.div(class_='mybody'):
-        with h.div(id='myheader'):
-            h << h.a(h.img(src='/static/nagare/img/logo.gif'), id='logo', href='http://www.nagare.org/', title='Nagare home')
-            h << h.span('Congratulations !', id='title')
-
-        with h.div(id='main'):
-            h << h.h1('Your application is running')
-
-            with h.p:
-                h << 'You can now:'
+@presentation.render_for(Jakoont, "middle")
+def render(self, h, comp, *args):
+    h << h.h1(self.project.name)
+    with h.form:
+        with h.table:
+            with h.thead:
+                h << h.th("User")
+                h << h.th("Amount")
+            with h.tbody:
+                for entry in self.project.entries:
+                    with h.tr:
+                        h << h.td(entry.user.username)
+                        h << h.td(entry.amount)
+                        h << h.td(h.a("Remove").action(lambda eid=entry.id: self.remove_entry(eid)))
+                with h.tr:
+                    with h.td:
+                        with h.select(class_="userlist").action(self.entry_user_id):
+                            for user in self.all_users:
+                                h << h.option(user.username, value=user.id)
+                    h << h.td(h.input().action(self.add_entry))
+                    h << h.td(h.input(type_="submit"))
+    
+    avg_amount = self.get_avg_amount()
+    ur = self.get_user_repartition()
+    if avg_amount is not None:
+        with h.p:
+            h << u"Average amount is %.2f, " % avg_amount
+        with h.ul:
+            for u1 in ur:
+                h << h.li(u"%s donne:" %u1.username)
                 with h.ul:
-                    h << h.li('If your application uses a database, add your database entities into ', h.i(models_file))
-                    h << h.li('Add your application components into ', h.i(this_file), ' or create new files')
-
-            h << h.p('To learn more, go to the ', h.a('official website', href='http://www.nagare.org/'))
-
-            h << "Have fun !"
-
-    h << h.div(class_='footer')
-
+                    for u2, amount in ur[u1].items():
+                        h << h.li("%.2f a %s" %(amount, u2.username))
     return h.root
 
 # ---------------------------------------------------------------
 
-app = Jakoont2
+app = Jakoont
