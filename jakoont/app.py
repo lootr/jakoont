@@ -1,20 +1,19 @@
 from __future__ import with_statement
 
-from nagare import presentation
+from nagare import component, presentation
 from nagare.database import session
 
-from jakoont.models import Project as DBProject
 from jakoont.project import Project
 
 class Jakoont(object):
     def __init__(self):
-        self.projects = session.query(DBProject).all()
+        self.project_index = component.Component(Project(), "index")
 
     def login(self):
         pass
 
     def edit(self, comp, pid):
-        return comp.becomes(Project(pid), "edit")
+        return comp.call(Project(pid), "edit")
 
 @presentation.render_for(Jakoont)
 def render(self, h, comp, *args):
@@ -44,7 +43,7 @@ def render(self, h, *args):
 
 @presentation.render_for(Jakoont, "middle")
 def render(self, h, comp, *args):
-    h << h.ul(h.li(h.a(proj.name).action(lambda pid=proj.id: self.edit(comp, pid))) for proj in self.projects)
+    h << self.project_index
     return h.root
 
 # ---------------------------------------------------------------

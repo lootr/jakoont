@@ -9,7 +9,7 @@ from jakoont.models import Project as DBProject,\
     User as DBUser, Entry as DBEntry
 
 class Project(object):
-    def __init__(self, project_id):
+    def __init__(self, project_id=None):
         self.project_id = project_id
         self.initialize()
 
@@ -35,6 +35,9 @@ class Project(object):
             for user in self.entry_users
             )
         self.entry_user_id = var.Var()
+
+    def get_projects(self):
+        return session.query(DBProject).all()
 
     def login(self):
         pass
@@ -74,6 +77,13 @@ class Project(object):
                         .setdefault(u2.username, 0.) + to_give
         return d
 
+@presentation.render_for(Project, "index")
+def render(self, h, comp, *args):
+    with h.ul:
+        for proj in self.get_projects():
+            h << h.li(h.a(proj.name).action(lambda pid=proj.id: comp.call(Project(pid), "edit")))
+    return h.root
+
 @presentation.render_for(Project, "edit")
 def render(self, h, comp, *args):
     project = self._v_project
@@ -96,7 +106,13 @@ def render(self, h, comp, *args):
                                 h << h.option(user.username, value=user.id)
                     h << h.td(h.input().action(self.add_entry))
                     h << h.td(h.input(type_="submit"))
-    
+    h << comp.render(h, "repartition")
+    h << h.a("Home").action(comp.answer)    
+
+    return h.root
+
+@presentation.render_for(Project, "repartition")
+def render(self, h, *args):
     precision = 2
     if self.avg_amount is not None:
         h << h.p(u"Average amount is %.2f, " % self.avg_amount)
