@@ -75,6 +75,25 @@ class Project(object):
                     users_amounts[u2.username] -= to_give
                     d[u1.username][u2.username] = d.setdefault(u1.username, {})\
                         .setdefault(u2.username, 0.) + to_give
+
+        for u1 in d.keys():
+            for u2, a1 in d.get(u1, {}).items():
+                a2 = d.get(u2, {}).get(u1, 0.)
+                if not (a1 and a2): continue
+                if a1 > a2:
+                    d[u1][u2] = a1 - a2
+                    del d[u2][u1]
+                elif a1 < a2:
+                    d[u2][u1] = a2 - a1
+                    del d[u1][u2]
+                else:
+                    del d[u1][u2]
+                    del d[u2][u1]
+            if u1 in d and not d[u1]:
+                del d[u1]
+            if u2 in d and not d[u2]:
+                del d[u2]
+        
         return d
 
 @presentation.render_for(Project, "index")
