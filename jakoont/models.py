@@ -39,6 +39,8 @@ class Entry(Base):
     amount          = Column(Float, nullable=False)
 
 
+Project.project_users = relation(ProjectUser, backref="project")
+User.project_users = relation(ProjectUser, backref="user")
 Project.users = relation(User, ProjectUser.__table__, backref="projects")
 Entry.project = relation(Project, backref="entries")
 Entry.user = relation(User, backref="entries")

@@ -1,7 +1,6 @@
 from __future__ import with_statement
 
 from nagare import component, presentation
-from nagare.database import session
 
 from jakoont.project import Project, ProjectEditor
 

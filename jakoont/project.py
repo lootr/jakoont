@@ -2,30 +2,31 @@ from __future__ import with_statement
 
 import itertools
 from nagare import component, presentation, editor, var
-from nagare.database import session
+from nagare import database
 from nagare.validator import StringValidator, IntValidator
 from sqlalchemy.sql import expression, func
 
 from jakoont.models import Project as DBProject,\
-    User as DBUser, Entry as DBEntry
+    User as DBUser, Entry as DBEntry, ProjectUser as DBProjectUser
 
 class Project(object):
     def __init__(self, project_id=None):
         self.project_id = project_id
         self.name = None
+        self.users_ids = []
         self.editor = ProjectEditor(self)
         if project_id:
             self.initialize()
 
     def initialize(self):
         self.entry_users = self._v_project.users
-        self.avg_amount = session.query(func.sum(DBEntry.amount))\
+        self.avg_amount = database.session.query(func.sum(DBEntry.amount))\
             .filter_by(project_id=self.project_id)\
             .first()[0]
         if self.avg_amount is not None:
             self.avg_amount /= len(self.entry_users)
         self.users_amounts = dict(
-            (user.username, session.query(func.sum(DBEntry.amount))\
+            (user.username, database.session.query(func.sum(DBEntry.amount))\
                  .filter_by(project_id=self.project_id)\
                  .filter_by(user_id=user.id)\
                  .first()[0] or 0.)
@@ -33,10 +34,14 @@ class Project(object):
 
     @property
     def _v_project(self):
-        return session.query(DBProject).get(self.project_id)
+        if self.project_id is not None:
+            return database.session.query(DBProject).get(self.project_id)
 
     def get_projects(self):
-        return session.query(DBProject).all()
+        return database.session.query(DBProject).all()
+
+    def get_users(self):
+        return database.session.query(DBUser).all()
 
     def login(self):
         pass
@@ -45,12 +50,19 @@ class Project(object):
         res = comp.call(self.editor, "new")
         if res:
             proj = DBProject(name=self.name)
-            session.add(proj)
+            for user_id in self.users_ids:
+                pu = DBProjectUser(project_id=self.project_id,
+                                   user_id=user_id)
+                proj.project_users.append(pu)
+            database.session.add(proj)
 
     def get_user_repartition(self, precision=2):
         users_amounts = self.users_amounts.copy()
         d = {}
         d2 = None
+
+        # Each user that gave less than the average amount
+        # gives to the others to balance repartition
         while d2 != d:
             d2 = d.copy()
             for u1, u2 in itertools.product(self.entry_users, repeat=2):
@@ -66,9 +78,15 @@ class Project(object):
                     d[u1.username][u2.username] = d.setdefault(u1.username, {})\
                         .setdefault(u2.username, 0.) + to_give
 
+        # Then avoid multiple shares between two users like:
+        #        A gives X to B
+        #        B gives Y to A
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # A gives X-Y to B (with X > Y)
         for u1 in d.keys():
             for u2, a1 in d.get(u1, {}).items():
                 a2 = d.get(u2, {}).get(u1, 0.)
+                # Two users must exist to balance shares
                 if not (a1 and a2): continue
                 if a1 > a2:
                     d[u1][u2] = a1 - a2
@@ -79,34 +97,43 @@ class Project(object):
                 else:
                     del d[u1][u2]
                     del d[u2][u1]
-            if u1 in d and not d[u1]:
-                del d[u1]
-            if u2 in d and not d[u2]:
-                del d[u2]
+            # Remove null shares
+            for u in [u1, u2]:
+                if u in d and not d[u]:
+                    del d[u]
         
         return d
 
 
 class ProjectEditor(editor.Editor):
     def __init__(self, project):
-        super(ProjectEditor, self).__init__(project, ("project_id", "name",))
+        super(ProjectEditor, self).__init__(project, ("project_id", "name", "users_ids"))
         self.name.validate(StringValidator)
+        self.users_ids#.validate(ListValidatorMeta(IntValidator))
         self.entry_user_id = var.Var()
         self.new_amount = editor.Property().validate(IntValidator)
 
     def add_entry(self):
         if super(ProjectEditor, self).commit((), ('new_amount',)):
-            session.add(DBEntry(amount=self.new_amount(),
-                                user_id=self.entry_user_id(),
-                                project_id=self.project_id()))
+            database.session.add(DBEntry(amount=self.new_amount.value,
+                                         user_id=self.entry_user_id(),
+                                         project_id=self.project_id()
+                                         ))
             self.target.initialize()
     
     def remove_entry(self, eid):
-        session.query(DBEntry).filter_by(id=eid).delete()
+        database.session.query(DBEntry).filter_by(id=eid).delete()
         self.target.initialize()
 
+    def add_projectuser(self):
+        if super(ProjectEditor, self).commit((), ('users_ids',)):
+            database.session.add(DBProjectUser(project_id=self.project_id(),
+                                               user_id=self.users_ids.value
+                                               ))
+            self.target.initialize()
+
     def commit(self, comp):
-        if super(ProjectEditor, self).commit(('name',), ('new_amount',)):
+        if super(ProjectEditor, self).commit(('name', 'users_ids'), ('new_amount',)):
             comp.answer(self)
 
 
@@ -126,6 +153,10 @@ def render(self, h, comp, *args):
             with h.tr:
                 h << h.th(h.label("Name"))
                 h << h.td(h.input().action(self.name))
+            with h.tr:
+                h << h.th(h.label("Users"))
+                opts = [h.option(u.username, value=u.id) for u in self.target.get_users()]
+                h << h.td(h.select(opts, multiple=True).action(self.users_ids))
 
             with h.tr:
                 h << h.td(h.input(type="submit").action(lambda: self.commit(comp)), colspan=2)
@@ -150,10 +181,15 @@ def render(self, h, comp, *args):
                 with h.tr:
                     with h.td:
                         with h.select(class_="userlist").action(self.entry_user_id):
-                            for user in self.target._v_project.users:
+                            for user in project.users:
                                 h << h.option(user.username, value=user.id)
                     h << h.td(h.input().action(self.new_amount).error(self.new_amount.error))
                     h << h.td(h.input(type="submit").action(self.add_entry))
+                with h.tr:
+                    opts = [h.option(u.username, value=u.id) for u in self.target.get_users()]
+                    #h << h.td(h.select(opts).action(self.users_ids), colspan=2)
+                    #h << h.td(h.input(type="submit").action(self.add_projectuser))
+
     h << component.Component(self.target, "repartition")
     h << h.a("Home").action(comp.answer)    
 
