@@ -1,7 +1,11 @@
 # Backup edited files #
-####################################
+#######################
 *~
 
 # Compiled source #
 ###################
 *.py[cod]
+
+# distutils #
+#############
+/jakoont.egg-info/

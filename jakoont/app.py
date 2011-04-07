@@ -2,7 +2,7 @@ from __future__ import with_statement
 
 from nagare import component, presentation
 
-from jakoont.project import Project, ProjectEditor
+from jakoont.project import Project
 
 class Jakoont(object):
     def __init__(self):
