@@ -15,27 +15,27 @@ class Project(object):
         self.name = None
         self.users_ids = []
         self.editor = ProjectEditor(self)
-        if project_id:
-            self.initialize()
-
-    def initialize(self):
-        self.entry_users = self._v_project.users
-        self.avg_amount = database.session.query(func.sum(DBEntry.amount))\
-            .filter_by(project_id=self.project_id)\
-            .first()[0]
-        if self.avg_amount is not None:
-            self.avg_amount /= len(self.entry_users)
-        self.users_amounts = dict(
-            (user.username, database.session.query(func.sum(DBEntry.amount))\
-                 .filter_by(project_id=self.project_id)\
-                 .filter_by(user_id=user.id)\
-                 .first()[0] or 0.)
-            for user in self.entry_users)
 
     @property
     def _v_project(self):
         if self.project_id is not None:
             return database.session.query(DBProject).get(self.project_id)
+
+    def get_avg_amount(self):
+        c1 = func.sum(DBEntry.amount)
+        c2 = func.sum(DBProjectUser.balancing)
+        return database.session.query(c1.op("/")(c2))\
+                .filter(DBEntry.project_id == self.project_id)\
+                .filter(DBProjectUser.project_id == self.project_id)\
+                .one()[0]
+
+    def get_users_amounts(self):
+        return dict(
+            (user, database.session.query(func.sum(DBEntry.amount))\
+                 .filter_by(project_id=self.project_id)\
+                 .filter_by(user=user)\
+                 .scalar() or 0.)
+            for user in self._v_project.users)
 
     def get_projects(self):
         return database.session.query(DBProject).all()
@@ -56,8 +56,12 @@ class Project(object):
                 proj.project_users.append(pu)
             database.session.add(proj)
 
+    def edit(self, comp):
+        return comp.call(self.editor, "edit")
+
     def get_user_repartition(self, precision=2):
-        users_amounts = self.users_amounts.copy()
+        avg_amount = self.get_avg_amount()
+        users_amounts = self.get_users_amounts()
         d = {}
         d2 = None
 
@@ -65,18 +69,18 @@ class Project(object):
         # gives to the others to balance repartition
         while d2 != d:
             d2 = d.copy()
-            for u1, u2 in itertools.product(self.entry_users, repeat=2):
+            for u1, u2 in itertools.product(self._v_project.users, repeat=2):
                 if u1 == u2: continue
-                u1a = users_amounts[u1.username]
-                u2a = users_amounts[u2.username]
-                if u1a > self.avg_amount or u2a < self.avg_amount or u1a > u2a:
+                u1a = users_amounts[u1]
+                u2a = users_amounts[u2]
+                if u1a > avg_amount or u2a < avg_amount or u1a > u2a:
                     continue
-                to_give = round(u2a - self.avg_amount, precision)
+                to_give = round(u2a - avg_amount, precision)
                 if to_give:
-                    users_amounts[u1.username] += to_give
-                    users_amounts[u2.username] -= to_give
-                    d[u1.username][u2.username] = d.setdefault(u1.username, {})\
-                        .setdefault(u2.username, 0.) + to_give
+                    users_amounts[u1] += to_give
+                    users_amounts[u2] -= to_give
+                    d[u1][u2] = d.setdefault(u1, {})\
+                        .setdefault(u2, 0.) + to_give
 
         # Then avoid multiple shares between two users like:
         #        A gives X to B
@@ -119,18 +123,15 @@ class ProjectEditor(editor.Editor):
                                          user_id=self.entry_user_id(),
                                          project_id=self.project_id()
                                          ))
-            self.target.initialize()
     
     def remove_entry(self, eid):
         database.session.query(DBEntry).filter_by(id=eid).delete()
-        self.target.initialize()
 
     def add_projectuser(self):
         if super(ProjectEditor, self).commit((), ('users_ids',)):
             database.session.add(DBProjectUser(project_id=self.project_id(),
                                                user_id=self.users_ids.value
                                                ))
-            self.target.initialize()
 
     def commit(self, comp):
         if super(ProjectEditor, self).commit(('name', 'users_ids'), ('new_amount',)):
@@ -172,11 +173,13 @@ def render(self, h, comp, *args):
             with h.thead:
                 h << h.th("User")
                 h << h.th("Amount")
+                h << h.th("Comment")
             with h.tbody:
                 for entry in project.entries:
                     with h.tr:
                         h << h.td(entry.user.username)
                         h << h.td(entry.amount)
+                        h << h.td(entry.comment)
                         h << h.td(h.a("Remove").action(lambda eid=entry.id: self.remove_entry(eid)))
                 with h.tr:
                     with h.td:
@@ -197,17 +200,18 @@ def render(self, h, comp, *args):
 
 @presentation.render_for(Project, "repartition")
 def render(self, h, *args):
-    precision = 2
-    if self.avg_amount is not None:
-        h << h.p(u"Average amount is %.2f, " % self.avg_amount)
+    precision = 1
+    avg_amount = self.get_avg_amount()
+    if avg_amount:
+        h << h.p(u"Average amount is %.2f, " % avg_amount)
         with h.ul:
-            while precision >= 2:
+            while precision >= 1:
                 with h.li:
                     h << u"a %d decimales pres" %precision
                     with h.ul:
                         for u1, u2s in self.get_user_repartition(precision).items():
-                            h << h.li(u"%s donne:" %u1)
-                            h << h.ul(h.li("%.2f a %s" %(amount, u2)) for u2, amount in u2s.items())
+                            h << h.li(u"%s donne:" %u1.username)
+                            h << h.ul(h.li("%.2f a %s" %(amount, u2.username)) for u2, amount in u2s.items())
                 precision -= 1
 
     return h.root
