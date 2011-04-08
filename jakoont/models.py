@@ -3,7 +3,8 @@ from nagare import database
 from sqlalchemy import Column, Unicode, Integer, ForeignKey, DateTime, Float, UnicodeText, ForeignKeyConstraint
 from sqlalchemy.ext.associationproxy import association_proxy
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import exc, relation
+from sqlalchemy.orm import exc, backref, relation as sa_relation
+from sqlalchemy.orm.collections import collection_adapter
 from sqlalchemy.orm.properties import ColumnProperty
 
 Base = declarative_base()
@@ -14,6 +15,31 @@ def _repr(self):
     return "<%s %s />" %(cls.__name__, ' '.join('%s=%r' %(p.key, getattr(self, p.key)) for p in self.__mapper__.iterate_properties if isinstance(p, ColumnProperty)))
 
 Base.__repr__ = _repr
+
+class InstrumentedFilteredList(list):
+    def filter_by(self, **filter_map):
+        def _filter(item):
+            for cond_key, cond_value in filter_map.items():
+                if getattr(item, cond_key) != cond_value:
+                    return False
+            return True
+        return filter(_filter, self)
+
+    def one(self, **filter_map):
+        try:
+            return self.filter_by(**filter_map)[0]
+        except IndexError:
+            raise exc.NoResultFound
+
+
+def relation(*args, **kwargs):
+    default_dict = {'collection_class': InstrumentedFilteredList}
+    for kvp in default_dict.items():
+        kwargs.setdefault(*kvp)
+    br = kwargs.get('backref')
+    if isinstance(br, basestring):
+        kwargs['backref'] = backref(br, **default_dict)
+    return sa_relation(*args, **kwargs)
 
 def _create_pu_by_user(user, balancing=None):
     if isinstance(user, tuple):
@@ -32,11 +58,10 @@ class Project(Base):
     def add_entry(self, user, *args, **kwargs):
         attrs = dict(project=self, user=user)
         try:
-            pu = database.session.query(ProjectUser).filter_by(**attrs).one()
+            pu = self.project_users.one(**attrs)
         except exc.NoResultFound:
             pu = ProjectUser(**attrs)
-            database.session.add(pu)
-            database.session.flush()
+            self.project_users.append(pu)
         return pu.add_entry(*args, **kwargs)
 
 

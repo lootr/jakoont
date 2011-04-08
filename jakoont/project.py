@@ -25,9 +25,9 @@ class Project(object):
         c1 = func.sum(DBEntry.amount)
         c2 = func.sum(DBProjectUser.balancing)
         return database.session.query(c1.op("/")(c2))\
-                .filter(DBEntry.project_id == self.project_id)\
-                .filter(DBProjectUser.project_id == self.project_id)\
-                .one()[0]
+            .filter(DBEntry.project_id == self.project_id)\
+            .filter(DBProjectUser.project_id == self.project_id)\
+            .one()[0]
 
     def get_users_amounts(self):
         return dict(
