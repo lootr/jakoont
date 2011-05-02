@@ -24,18 +24,19 @@ class Project(object):
     def get_avg_amount(self):
         c1 = func.sum(DBEntry.amount)
         c2 = func.sum(DBProjectUser.balancing)
-        return database.session.query(c1.op("/")(c2))\
-            .filter(DBEntry.project_id == self.project_id)\
-            .filter(DBProjectUser.project_id == self.project_id)\
-            .one()[0]
+        sum_balancing_q = database.session.query(c2)\
+            .filter(DBProjectUser.project_id == self.project_id)
+        avg_q = database.session.query(c1.op("/")(sum_balancing_q.subquery()))\
+            .filter(DBEntry.project_id == self.project_id)
+        return avg_q.scalar()
 
-    def get_users_amounts(self):
+    def get_project_users_amounts(self):
         return dict(
-            (user, database.session.query(func.sum(DBEntry.amount))\
+            (puser, database.session.query(func.sum(DBEntry.amount))\
                  .filter_by(project_id=self.project_id)\
-                 .filter_by(user=user)\
+                 .filter_by(user_id=puser.user_id)\
                  .scalar() or 0.)
-            for user in self._v_project.users)
+            for puser in self._v_project.project_users)
 
     def get_projects(self):
         return database.session.query(DBProject).all()
@@ -59,9 +60,9 @@ class Project(object):
     def edit(self, comp):
         return comp.call(self.editor, "edit")
 
-    def get_user_repartition(self, precision=2):
+    def get_project_user_repartition(self, precision=2):
         avg_amount = self.get_avg_amount()
-        users_amounts = self.get_users_amounts()
+        project_users_amounts = self.get_project_users_amounts()
         d = {}
         d2 = None
 
@@ -69,16 +70,17 @@ class Project(object):
         # gives to the others to balance repartition
         while d2 != d:
             d2 = d.copy()
-            for u1, u2 in itertools.product(self._v_project.users, repeat=2):
+            for u1, u2 in itertools.product(self._v_project.project_users, repeat=2):
                 if u1 == u2: continue
-                u1a = users_amounts[u1]
-                u2a = users_amounts[u2]
+                u1a = project_users_amounts[u1]
+                u2a = project_users_amounts[u2]
                 if u1a > avg_amount or u2a < avg_amount or u1a > u2a:
                     continue
-                to_give = round(u2a - avg_amount, precision)
+                to_give = (u2a - avg_amount) / u2.balancing
+                to_give = round(to_give, precision)
                 if to_give:
-                    users_amounts[u1] += to_give
-                    users_amounts[u2] -= to_give
+                    project_users_amounts[u1] += to_give
+                    project_users_amounts[u2] -= to_give
                     d[u1][u2] = d.setdefault(u1, {})\
                         .setdefault(u2, 0.) + to_give
 
@@ -86,7 +88,7 @@ class Project(object):
         #        A gives X to B
         #        B gives Y to A
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # A gives X-Y to B (with X > Y)
+        # A gives X-Y to B (when X > Y)
         for u1 in d.keys():
             for u2, a1 in d.get(u1, {}).items():
                 a2 = d.get(u2, {}).get(u1, 0.)
@@ -105,6 +107,11 @@ class Project(object):
             for u in [u1, u2]:
                 if u in d and not d[u]:
                     del d[u]
+
+#        for u1 in d.keys():
+#            for u2 in d.get(u1, {}).keys():
+#                # Two users must exist to balance shares
+#                if not (a1 and a2): continue
         
         return d
 
@@ -115,11 +122,13 @@ class ProjectEditor(editor.Editor):
         self.name.validate(StringValidator)
         self.users_ids#.validate(ListValidatorMeta(IntValidator))
         self.entry_user_id = var.Var()
-        self.new_amount = editor.Property().validate(IntValidator)
+        self.new_amount = editor.Property().validate(float)
+        self.new_comment = editor.Property().validate(StringValidator)
 
     def add_entry(self):
-        if super(ProjectEditor, self).commit((), ('new_amount',)):
+        if super(ProjectEditor, self).commit((), ('new_amount', 'new_comment')):
             database.session.add(DBEntry(amount=self.new_amount.value,
+                                         comment=self.new_comment.value,
                                          user_id=self.entry_user_id(),
                                          project_id=self.project_id()
                                          ))
@@ -134,7 +143,7 @@ class ProjectEditor(editor.Editor):
                                                ))
 
     def commit(self, comp):
-        if super(ProjectEditor, self).commit(('name', 'users_ids'), ('new_amount',)):
+        if super(ProjectEditor, self).commit(('name', 'users_ids'), ('new_amount', 'new_comment')):
             comp.answer(self)
 
 
@@ -187,6 +196,7 @@ def render(self, h, comp, *args):
                             for user in project.users:
                                 h << h.option(user.username, value=user.id)
                     h << h.td(h.input().action(self.new_amount).error(self.new_amount.error))
+                    h << h.td(h.input().action(self.new_comment).error(self.new_comment.error))
                     h << h.td(h.input(type="submit").action(self.add_entry))
                 with h.tr:
                     opts = [h.option(u.username, value=u.id) for u in self.target.get_users()]
@@ -209,9 +219,10 @@ def render(self, h, *args):
                 with h.li:
                     h << u"a %d decimales pres" %precision
                     with h.ul:
-                        for u1, u2s in self.get_user_repartition(precision).items():
-                            h << h.li(u"%s donne:" %u1.username)
-                            h << h.ul(h.li("%.2f a %s" %(amount, u2.username)) for u2, amount in u2s.items())
+                        for pu1, pu2s in self.get_project_user_repartition(precision).items():
+                            h << h.li(u"%s donne:" %pu1.user.username)
+                            h << h.ul(h.li("%.2f a %s" %(amount, pu2.user.username))
+                                      for pu2, amount in pu2s.items())
                 precision -= 1
 
     return h.root
